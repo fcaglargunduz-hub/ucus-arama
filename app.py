@@ -222,11 +222,58 @@ if search_btn:
     total = sum(len(o) + len(r) for o, r in results.values())
     st.success(f"✅ {len(weekends)} hafta sonu tarandı — {total} uygun uçuş bulundu")
 
+    # ─── EN UCUZ GIT-GEL ──────────────────────────────────────────────────────
+
+    month_tr = ["","Oca","Şub","Mar","Nis","May","Haz","Tem","Ağu","Eyl","Eki","Kas","Ara"]
+
+    best_weekend = None
+    best_total   = None
+    best_sat     = None
+    best_sun     = None
+
+    for sat, sun in weekends:
+        out, ret = results[(sat, sun)]
+        min_out  = out[0]["price"] if out else None
+        min_ret  = ret[0]["price"] if ret else None
+        if min_out and min_ret:
+            total_price = min_out + min_ret
+            if best_total is None or total_price < best_total:
+                best_total   = total_price
+                best_sat     = sat
+                best_sun     = sun
+                best_out_f   = out[0]
+                best_ret_f   = ret[0]
+
+    if best_weekend is not None or best_total is not None:
+        st.divider()
+        st.markdown("## 🏆 En Ucuz Gidiş-Dönüş")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric(
+                "📅 Tarih",
+                f"{best_sat.day} {month_tr[best_sat.month]} – {best_sun.day} {month_tr[best_sun.month]}"
+            )
+        with c2:
+            st.metric("🛫 Gidiş", fmt_price(best_out_f["price"]),
+                      f"{best_out_f['dep']} → {best_out_f['arr']}  ·  {best_out_f['airline']}")
+        with c3:
+            st.metric("🛬 Dönüş", fmt_price(best_ret_f["price"]),
+                      f"{best_ret_f['dep']} → {best_ret_f['arr']}  ·  {best_ret_f['airline']}")
+        with c4:
+            st.metric("💰 Toplam", fmt_price(best_total), "kişi başı gidiş-dönüş")
+
+        st.link_button(
+            f"🔗 Bu tarihi Google Flights'ta Aç — {fmt_price(best_total)}",
+            build_gf_url(best_sat, best_sun),
+            use_container_width=True,
+            type="primary",
+        )
+        st.divider()
+
     # ─── SONUÇLAR ─────────────────────────────────────────────────────────────
 
     current_month = None
     card_idx = 0
-    month_tr = ["","Oca","Şub","Mar","Nis","May","Haz","Tem","Ağu","Eyl","Eki","Kas","Ara"]
 
     for sat, sun in weekends:
         if sat.month != current_month:
@@ -240,11 +287,29 @@ if search_btn:
         sat_lbl = f"{sat.day} {month_tr[sat.month]} Cumartesi"
         sun_lbl = f"{sun.day} {month_tr[sun.month]} Pazar"
 
-        min_out = out[0]["price"] if out else None
-        min_ret = ret[0]["price"] if ret else None
-        total_txt = f"  —  Toplam ~{fmt_price(min_out + min_ret)}" if min_out and min_ret else ""
+        min_out     = out[0]["price"] if out else None
+        min_ret     = ret[0]["price"] if ret else None
+        total_price = (min_out + min_ret) if (min_out and min_ret) else None
 
-        with st.expander(f"**{card_idx}. Hafta Sonu** · {sat_lbl} → {sun_lbl}{total_txt}", expanded=True):
+        # Expander başlığında fiyat
+        is_best    = (best_total is not None and total_price == best_total)
+        best_label = " 🏆 EN UCUZ" if is_best else ""
+        price_label = f"  —  💰 {fmt_price(total_price)}" if total_price else "  —  fiyat bulunamadı"
+        expander_title = f"**{card_idx}. Hafta Sonu** · {sat_lbl} → {sun_lbl}{price_label}{best_label}"
+
+        with st.expander(expander_title, expanded=is_best):
+
+            # Kart içi fiyat özeti
+            if total_price:
+                pc1, pc2, pc3 = st.columns(3)
+                with pc1:
+                    st.metric("🛫 Gidiş (en ucuz)", fmt_price(min_out))
+                with pc2:
+                    st.metric("🛬 Dönüş (en ucuz)", fmt_price(min_ret))
+                with pc3:
+                    st.metric("💰 Toplam", fmt_price(total_price),
+                              "🏆 En ucuz hafta sonu!" if is_best else None)
+                st.divider()
 
             st.markdown(f"#### 🔵 Gidiş &nbsp; `{sat_lbl}` &nbsp; 09:00 – 15:00")
             render_flights(out, "🛫", "SAW → ECN")
