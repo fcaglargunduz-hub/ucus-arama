@@ -253,9 +253,11 @@ def duration_fmt(mins):
 
 def build_gf_url(origin, destination, dep_date, ret_date):
     def ap(code):
-        return bytes([0x07, 0x08, 0x01, 0x12, 0x03]) + code.encode()
+        s = code.decode() if isinstance(code, bytes) else str(code)
+        return bytes([0x07, 0x08, 0x01, 0x12, 0x03]) + s.encode()
     def leg(fr, to, d):
-        body = b'\x12\x0a' + d.encode() + b'\x6a' + ap(fr) + b'\x72' + ap(to)
+        ds = d.decode() if isinstance(d, bytes) else str(d)
+        body = b'\x12\x0a' + ds.encode() + b'\x6a' + ap(fr) + b'\x72' + ap(to)
         return b'\x1a' + bytes([len(body)]) + body
     raw = (b'\x08\x1c\x10\x02'
            + leg(origin, destination, dep_date.isoformat())
