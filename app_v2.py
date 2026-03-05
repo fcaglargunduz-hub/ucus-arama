@@ -253,39 +253,56 @@ def duration_fmt(mins):
 
 def build_gf_url(origin, destination, dep_date, ret_date):
     def ap(code):
-        return b'\x07\x08\x01\x12\x03' + code.encode()
+        return bytes([0x07, 0x08, 0x01, 0x12, 0x03]) + code.encode()
     def leg(fr, to, d):
         body = b'\x12\x0a' + d.encode() + b'\x6a' + ap(fr) + b'\x72' + ap(to)
         return b'\x1a' + bytes([len(body)]) + body
     raw = (b'\x08\x1c\x10\x02'
-           + leg(origin.encode() if isinstance(origin, str) else origin,
-                 destination.encode() if isinstance(destination, str) else destination,
-                 dep_date.isoformat())
-           + leg(destination.encode() if isinstance(destination, str) else destination,
-                 origin.encode() if isinstance(origin, str) else origin,
-                 ret_date.isoformat())
+           + leg(origin, destination, dep_date.isoformat())
+           + leg(destination, origin, ret_date.isoformat())
            + b'\x42\x01\x01\x48\x01\x70\x01\x98\x01\x01\xc8\x01\x01')
-    # fix: pass strings not bytes to ap()
-    def ap2(code):
-        return bytes([0x07,0x08,0x01,0x12,0x03]) + code.encode()
-    def leg2(fr, to, d):
-        body = b'\x12\x0a' + d.encode() + b'\x6a' + ap2(fr) + b'\x72' + ap2(to)
-        return b'\x1a' + bytes([len(body)]) + body
-    raw2 = (b'\x08\x1c\x10\x02'
-            + leg2(origin, destination, dep_date.isoformat())
-            + leg2(destination, origin, ret_date.isoformat())
-            + b'\x42\x01\x01\x48\x01\x70\x01\x98\x01\x01\xc8\x01\x01')
-    tfs = base64.b64encode(raw2).decode()
+    tfs = base64.b64encode(raw).decode()
     return f"https://www.google.com/travel/flights/search?tfs={tfs}&curr=TRY&hl=tr"
 
-def fetch_flights(api_key, origin, destination, dep_date, ret_date,
-                  out_min, out_max, ret_min, ret_max):
+# ─── ÖNBELLEK (disk + memory) ─────────────────────────────────────────────────
+
+import json, os, hashlib
+
+CACHE_FILE = "flight_cache.json"
+
+def _cache_key(origin, destination, dep_date, ret_date, out_min, out_max, ret_min, ret_max):
+    raw = f"{origin}_{destination}_{dep_date}_{ret_date}_{out_min}_{out_max}_{ret_min}_{ret_max}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+def _load_disk_cache():
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def _save_disk_cache(cache):
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False)
+    except:
+        pass
+
+# Memory cache (session boyunca)
+if "flight_cache" not in st.session_state:
+    st.session_state.flight_cache = _load_disk_cache()
+
+@st.cache_data(ttl=3600, show_spinner=False)  # 1 saat memory cache
+def _fetch_raw(api_key, origin, destination, dep_date_str, ret_date_str):
+    """Ham SerpAPI çağrısı — sadece cache miss olunca çalışır."""
     params = {
         "engine":        "google_flights",
         "departure_id":  origin,
         "arrival_id":    destination,
-        "outbound_date": dep_date.isoformat(),
-        "return_date":   ret_date.isoformat(),
+        "outbound_date": dep_date_str,
+        "return_date":   ret_date_str,
         "adults":        1,
         "currency":      "TRY",
         "hl":            "tr",
@@ -294,9 +311,24 @@ def fetch_flights(api_key, origin, destination, dep_date, ret_date,
     }
     try:
         resp = requests.get("https://serpapi.com/search", params=params, timeout=30)
-        data = resp.json()
+        return resp.json()
     except Exception as e:
-        return [], [], str(e)
+        return {"error": str(e)}
+
+def fetch_flights(api_key, origin, destination, dep_date, ret_date,
+                  out_min, out_max, ret_min, ret_max):
+
+    key = _cache_key(origin, destination, dep_date, ret_date,
+                     out_min, out_max, ret_min, ret_max)
+
+    # 1. Disk cache'e bak
+    if key in st.session_state.flight_cache:
+        cached = st.session_state.flight_cache[key]
+        return cached["outbound"], cached["inbound"], None
+
+    # 2. API'ye git
+    data = _fetch_raw(api_key, origin, destination,
+                      dep_date.isoformat(), ret_date.isoformat())
 
     if "error" in data:
         return [], [], data["error"]
@@ -340,6 +372,11 @@ def fetch_flights(api_key, origin, destination, dep_date, ret_date,
 
     outbound.sort(key=lambda x: x["price"] or 99999)
     inbound.sort( key=lambda x: x["price"] or 99999)
+
+    # 3. Sonucu disk + memory cache'e yaz
+    st.session_state.flight_cache[key] = {"outbound": outbound, "inbound": inbound}
+    _save_disk_cache(st.session_state.flight_cache)
+
     return outbound, inbound, None
 
 def render_flights(flights, emoji, route):
@@ -468,6 +505,16 @@ with st.sidebar:
     st.divider()
     st.caption(f"🛫 Gidiş: Cmt {out_min:02d}:00–{out_max:02d}:00\n🛬 Dönüş: Paz {ret_min:02d}:00–{ret_max:02d}:00")
 
+    st.divider()
+    cache_count = len(st.session_state.flight_cache)
+    st.markdown("**💾 Önbellek**")
+    st.caption(f"{cache_count} sorgu önbellekte")
+    if cache_count > 0:
+        if st.button("🗑 Önbelleği Temizle", use_container_width=True):
+            st.session_state.flight_cache = {}
+            _save_disk_cache({})
+            st.rerun()
+
 # ─── ANA SAYFA ────────────────────────────────────────────────────────────────
 
 st.title("✈️ SAW Kalkışlı Hafta Sonu Uçuşları")
@@ -512,12 +559,20 @@ if search_btn:
     all_results = []   # {dest, dest_name, sat, sun, outbound, inbound, total}
     bar   = st.progress(0, text="Başlıyor...")
     done  = 0
+    api_calls  = 0
+    cache_hits = 0
 
     for dest, sat, sun in tasks:
         dest_name = ALL_AIRPORTS.get(dest, dest)
+        key = _cache_key(ORIGIN, dest, sat, sun, out_min, out_max, ret_min, ret_max)
+        from_cache = key in st.session_state.flight_cache
+        cache_hits += 1 if from_cache else 0
+        api_calls  += 0 if from_cache else 1
+        icon = "💾" if from_cache else "🔍"
+
         bar.progress(
             (done + 1) / len(tasks),
-            text=f"🔍 SAW→{dest} ({dest_name}) · {sat.strftime('%d %b')} ({done+1}/{len(tasks)})"
+            text=f"{icon} SAW→{dest} · {sat.strftime('%d %b')} ({done+1}/{len(tasks)}) — 🔍 API: {api_calls}  💾 Önbellek: {cache_hits}"
         )
 
         out, ret, err = fetch_flights(
@@ -538,9 +593,11 @@ if search_btn:
             })
 
         done += 1
-        time.sleep(0.6)
+        if not from_cache:
+            time.sleep(0.6)  # Sadece gerçek API çağrısında bekle
 
     bar.empty()
+    st.caption(f"✅ Tamamlandı — 🔍 {api_calls} API sorgusu · 💾 {cache_hits} önbellekten")
 
     if not all_results:
         st.error("Hiç uygun uçuş bulunamadı. Saat pencerelerini genişletmeyi dene.")
